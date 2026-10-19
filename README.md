@@ -4,11 +4,7 @@
 
 ## Запуск
 
-Все команды запускайте из каталога проекта `Kvitto-payment-TA-`, где находятся `README.md`, `app/` и `requirements.txt`. Если терминал открыт в родительском каталоге `Kvitto`, выполните:
-
-```powershell
-Set-Location .\Kvitto-payment-TA-
-```
+Все команды запускайте из каталога проекта `Kvitto-payment-API`, где находятся `README.md`, `app/` и `requirements.txt`.
 
 ```powershell
 python -m venv .venv
