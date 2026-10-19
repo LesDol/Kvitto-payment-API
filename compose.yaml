@@ -5,7 +5,7 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: sqlite:////data/kvitto.db
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-local-development-secret}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-kvitto-demo-webhook-secret}
     volumes:
       - kvitto-data:/data
 

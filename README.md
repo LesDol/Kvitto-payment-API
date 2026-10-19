@@ -26,7 +26,7 @@ uvicorn app.main:app --reload
 docker compose up --build
 ```
 
-API будет доступно на `http://localhost:8000`, файл SQLite сохраняется в named volume `kvitto-data`. Задайте свой `WEBHOOK_SECRET` в окружении или `.env` рядом с compose-файлом. Compose содержит локальный development fallback; для production задайте секрет явно.
+API будет доступно на `http://localhost:8000`, файл SQLite сохраняется в named volume `kvitto-data`. Локальный запуск и Compose используют демонстрационный `WEBHOOK_SECRET` `kvitto-demo-webhook-secret`, поэтому для проверки `.env` настраивать не нужно. Для production задайте собственный секрет через окружение.
 
 ### Миграции
 
@@ -81,15 +81,16 @@ curl 'http://127.0.0.1:8000/payments?email=customer@example.com&status=pending'
 
 ### Webhook банка
 
-Подпись — hex HMAC-SHA256 от точных байтов тела запроса. Пример для bash с установленным OpenSSL:
+Для проверки подписи в PowerShell используйте готовый секрет из Compose. Замените `1` на ID платежа со статусом `pending`:
 
-```bash
-BODY='{"payment_id":1,"status":"succeeded"}'
-SIGNATURE=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | sed 's/^.* //')
-curl -X POST http://127.0.0.1:8000/webhooks/bank \
-  -H 'Content-Type: application/json' \
-  -H "X-Signature: $SIGNATURE" \
-  -d "$BODY"
+```powershell
+$secret = "kvitto-demo-webhook-secret"
+$paymentId = 1 # замените на ID платежа со статусом pending
+$body = '{"payment_id":' + $paymentId + ',"status":"succeeded"}'
+$key = [Text.Encoding]::UTF8.GetBytes($secret)
+$hmac = [Security.Cryptography.HMACSHA256]::new($key)
+$signature = ([BitConverter]::ToString($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($body)))).Replace('-', '').ToLowerInvariant()
+Invoke-RestMethod -Uri 'http://127.0.0.1:8000/webhooks/bank' -Method Post -ContentType 'application/json' -Headers @{ 'X-Signature' = $signature } -Body $body
 ```
 
-Секрет берётся из `WEBHOOK_SECRET`. При отсутствии или неверной подписи API возвращает 401. Допустимы переходы `pending → succeeded`, `pending → failed` и `succeeded → refunded`; запрещённый переход возвращает 409, отсутствующий платёж — 404.
+Для своего секрета задайте `WEBHOOK_SECRET` в окружении перед запуском приложения и укажите то же значение в `$secret`. Демонстрационный ключ предназначен только для локальной проверки. При неверной подписи API возвращает 401. Допустимы переходы `pending → succeeded`, `pending → failed` и `succeeded → refunded`; запрещённый переход возвращает 409, отсутствующий платёж — 404.
