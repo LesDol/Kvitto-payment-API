@@ -1,3 +1,7 @@
+import hashlib
+import hmac
+import json
+
 from sqlalchemy import func, select
 
 from app.models import Installment, Payment, Tariff
@@ -7,6 +11,16 @@ def payload(**overrides):
     data = {"tariff_id": 1, "email": "person@example.com", "method": "card"}
     data.update(overrides)
     return data
+
+
+def signed_webhook(http, body, secret="test-webhook-secret"):
+    content = json.dumps(body, separators=(",", ":")).encode()
+    signature = hmac.new(secret.encode(), content, hashlib.sha256).hexdigest()
+    return http.post(
+        "/webhooks/bank",
+        content=content,
+        headers={"Content-Type": "application/json", "X-Signature": signature},
+    )
 
 
 def test_tariffs_and_prices(client):
@@ -68,11 +82,11 @@ def test_webhook_transitions_and_invalid_transition(client):
     created = http.post("/payments", json=payload()).json()
     payment_id = created["id"]
     assert created["status"] == "pending"
-    succeeded = http.post("/webhooks/bank", json={"payment_id": payment_id, "status": "succeeded"})
+    succeeded = signed_webhook(http, {"payment_id": payment_id, "status": "succeeded"})
     assert succeeded.status_code == 200 and succeeded.json()["status"] == "succeeded"
-    refunded = http.post("/webhooks/bank", json={"payment_id": payment_id, "status": "refunded"})
+    refunded = signed_webhook(http, {"payment_id": payment_id, "status": "refunded"})
     assert refunded.status_code == 200 and refunded.json()["status"] == "refunded"
-    invalid = http.post("/webhooks/bank", json={"payment_id": payment_id, "status": "failed"})
+    invalid = signed_webhook(http, {"payment_id": payment_id, "status": "failed"})
     assert invalid.status_code == 409 and invalid.json() == {"error": "invalid_transition"}
     assert http.get(f"/payments/{payment_id}").json()["status"] == "refunded"
     with sessions() as db:
@@ -82,7 +96,7 @@ def test_webhook_transitions_and_invalid_transition(client):
 def test_missing_payments_and_webhooks(client):
     http, _ = client
     assert http.get("/payments/123456").status_code == 404
-    assert http.post("/webhooks/bank", json={"payment_id": 123456, "status": "succeeded"}).status_code == 404
+    assert signed_webhook(http, {"payment_id": 123456, "status": "succeeded"}).status_code == 404
 
 
 def test_payment_validation(client):
@@ -96,6 +110,31 @@ def test_payment_validation(client):
 def test_failed_transition_allowed_once(client):
     http, _ = client
     created = http.post("/payments", json=payload()).json()
-    failed = http.post("/webhooks/bank", json={"payment_id": created["id"], "status": "failed"})
+    failed = signed_webhook(http, {"payment_id": created["id"], "status": "failed"})
     assert failed.status_code == 200 and failed.json()["status"] == "failed"
-    assert http.post("/webhooks/bank", json={"payment_id": created["id"], "status": "succeeded"}).status_code == 409
+    assert signed_webhook(http, {"payment_id": created["id"], "status": "succeeded"}).status_code == 409
+
+
+def test_webhook_rejects_missing_and_invalid_signatures(client):
+    http, _ = client
+    body = {"payment_id": 1, "status": "succeeded"}
+    missing = http.post("/webhooks/bank", json=body)
+    invalid = http.post("/webhooks/bank", json=body, headers={"X-Signature": "0" * 64})
+    assert missing.status_code == 401
+    assert invalid.status_code == 401
+
+
+def test_payment_list_filters_can_be_combined(client):
+    http, _ = client
+    http.post("/payments", json=payload(email="alice@example.com"))
+    second = http.post("/payments", json=payload(email="alice@example.com"))
+    signed_webhook(http, {"payment_id": second.json()["id"], "status": "succeeded"})
+    http.post("/payments", json=payload(email="bob@example.com"))
+
+    assert len(http.get("/payments", params={"email": "alice@example.com"}).json()) == 2
+    assert len(http.get("/payments", params={"status": "pending"}).json()) == 2
+    combined = http.get("/payments", params={"email": "alice@example.com", "status": "succeeded"})
+    assert combined.status_code == 200
+    assert len(combined.json()) == 1
+    assert combined.json()[0]["email"] == "alice@example.com"
+    assert combined.json()[0]["status"] == "succeeded"

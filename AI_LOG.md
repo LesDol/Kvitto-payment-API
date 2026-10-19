@@ -15,3 +15,11 @@
 - `python -m pytest tests -q` в окружении `uv` с Python 3.11: 9 тестов прошли.
 - Во время проверки выявлены и исправлены: использование dependency-generator как context manager в lifespan и подключение тестовой БД к стартовой инициализации приложения.
 - TestClient вывел предупреждение Starlette о будущем устаревании интеграции с httpx; текущие тесты проходят.
+
+## Последующие доработки
+
+- Ключевой запрос: добавить Docker Compose, HMAC-SHA256 проверку `X-Signature` через `WEBHOOK_SECRET`, миграции Alembic, фильтры списка платежей по email/status и GitHub Actions для Ruff и pytest.
+- Добавлены Dockerfile и Compose с постоянным SQLite volume, начальная ревизия Alembic, подпись сырого тела webhook через `hmac.compare_digest`, совместные фильтры и CI workflow на push/pull_request.
+- Проверки текущего изменения: `ruff check .` прошёл; `pytest tests -q` прошёл (11 тестов); `alembic upgrade head` применил начальную миграцию к временной SQLite базе; `docker compose config` успешно разобрал Compose конфигурацию.
+- Для webhook отправитель подписывает точные байты JSON тела; секрет задаётся через `WEBHOOK_SECRET`.
+- Docker image не собирался и контейнер не запускался: Docker Compose сообщил, что Docker Desktop в этой среде не запущен.

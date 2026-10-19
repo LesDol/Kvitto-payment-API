@@ -4,7 +4,7 @@
 
 ## Запуск
 
-Все команды ниже запускайте из каталога проекта `Kvitto-payment-TA-` — там, где находятся `README.md`, `app/` и `requirements.txt`. Если терминал открыт в родительском каталоге `Kvitto`, сначала перейдите в проект:
+Все команды запускайте из каталога проекта `Kvitto-payment-TA-`, где находятся `README.md`, `app/` и `requirements.txt`. Если терминал открыт в родительском каталоге `Kvitto`, выполните:
 
 ```powershell
 Set-Location .\Kvitto-payment-TA-
@@ -14,18 +14,33 @@ Set-Location .\Kvitto-payment-TA-
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
+alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
-По умолчанию база `kvitto.db` создаётся в текущем каталоге. Для другой базы задайте `DATABASE_URL`, например `sqlite:///./local.db`. Три тарифа добавляются при старте; повторный старт не создаёт копии.
+По умолчанию используется `kvitto.db` в текущем каталоге. Для другой базы задайте `DATABASE_URL`, например `sqlite:///./local.db`. Тарифы добавляются при старте без дубликатов.
 
-## Тесты
+### Docker Compose
+
+```bash
+docker compose up --build
+```
+
+API будет доступно на `http://localhost:8000`, файл SQLite сохраняется в named volume `kvitto-data`. Задайте свой `WEBHOOK_SECRET` в окружении или `.env` рядом с compose-файлом. Compose содержит локальный development fallback; для production задайте секрет явно.
+
+### Миграции
+
+Схема БД управляется Alembic. Примените миграции командой `alembic upgrade head`. Для изменения схемы создайте ревизию командой `alembic revision --autogenerate -m "описание изменения"`, проверьте её и примените `alembic upgrade head`. URL базы задаётся через `DATABASE_URL`.
+
+## Тесты и CI
 
 ```powershell
+python -m pip install -r requirements-dev.txt
+ruff check .
 pytest -q
 ```
 
-Тесты используют отдельную временную SQLite базу.
+Тесты используют отдельную временную SQLite базу. GitHub Actions запускает Ruff и pytest при каждом push и pull request.
 
 ## API
 
@@ -35,7 +50,7 @@ pytest -q
 curl http://127.0.0.1:8000/tariffs
 ```
 
-Возвращаются `basic` — 990000 копеек, `standard` — 1990000 копеек и `premium` — 2990000 копеек.
+Тарифы `basic`, `standard`, `premium` стоят соответственно 990000, 1990000 и 2990000 копеек.
 
 ### Создать платёж
 
@@ -46,7 +61,7 @@ curl -i -X POST http://127.0.0.1:8000/payments \
   -d '{"tariff_id":1,"email":"customer@example.com","method":"card"}'
 ```
 
-Для рассрочки укажите `"method":"installment"` и `"installment_months":3` (допустимы также 6 и 12). Код `KVITTO10` снижает стоимость на 10%, регистр не важен. Новый запрос возвращает 201, повтор с тем же `Idempotency-Key` — исходный платёж с 200. Неизвестный промокод и некорректные поля возвращают 422.
+Для рассрочки передайте `"method":"installment"` и `"installment_months":3` (допустимы также 6 и 12). Промокод `KVITTO10` даёт скидку 10%, регистр не важен. Первый запрос с ключом идемпотентности возвращает 201, повторный — прежний платёж с 200.
 
 ### Получить платёж
 
@@ -54,14 +69,27 @@ curl -i -X POST http://127.0.0.1:8000/payments \
 curl http://127.0.0.1:8000/payments/1
 ```
 
-Ответ включает сумму в копейках, статус и сохранённый график рассрочки. Для отсутствующего платежа возвращается 404.
+Ответ содержит сумму в копейках, статус и сохранённый график рассрочки. Если платёж отсутствует, API возвращает 404.
+
+### Фильтр списка платежей
+
+```bash
+curl 'http://127.0.0.1:8000/payments?email=customer@example.com&status=pending'
+```
+
+`email` и `status` можно использовать по отдельности или вместе.
 
 ### Webhook банка
 
+Подпись — hex HMAC-SHA256 от точных байтов тела запроса. Пример для bash с установленным OpenSSL:
+
 ```bash
+BODY='{"payment_id":1,"status":"succeeded"}'
+SIGNATURE=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | sed 's/^.* //')
 curl -X POST http://127.0.0.1:8000/webhooks/bank \
   -H 'Content-Type: application/json' \
-  -d '{"payment_id":1,"status":"succeeded"}'
+  -H "X-Signature: $SIGNATURE" \
+  -d "$BODY"
 ```
 
-Допустимы переходы `pending → succeeded`, `pending → failed` и `succeeded → refunded`. Запрещённый переход возвращает 409; отсутствующий платёж — 404.
+Секрет берётся из `WEBHOOK_SECRET`. При отсутствии или неверной подписи API возвращает 401. Допустимы переходы `pending → succeeded`, `pending → failed` и `succeeded → refunded`; запрещённый переход возвращает 409, отсутствующий платёж — 404.

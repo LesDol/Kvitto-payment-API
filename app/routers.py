@@ -1,8 +1,13 @@
-from fastapi import APIRouter, Depends, Header, HTTPException, Response
+import hashlib
+import hmac
+from typing import Literal
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
+from app.config import get_webhook_secret
 from app.database import get_session
 from app.models import Payment, Tariff
 from app.schemas import BankWebhook, PaymentCreate, PaymentOut, TariffOut
@@ -56,8 +61,34 @@ def get_payment(payment_id: int, session: Session = Depends(get_session)):
     return payment_response(payment)
 
 
+@router.get("/payments", response_model=list[PaymentOut])
+def list_payments(
+    email: str | None = None,
+    status: Literal["pending", "succeeded", "failed", "refunded"] | None = None,
+    session: Session = Depends(get_session),
+):
+    query = select(Payment).options(selectinload(Payment.schedule)).order_by(Payment.id)
+    if email is not None:
+        query = query.where(Payment.email == email)
+    if status is not None:
+        query = query.where(Payment.status == status)
+    return [payment_response(payment) for payment in session.scalars(query)]
+
+
 @router.post("/webhooks/bank", responses={409: {"description": "Invalid status transition"}})
-def bank_webhook(data: BankWebhook, session: Session = Depends(get_session)):
+async def bank_webhook(
+    data: BankWebhook,
+    request: Request,
+    request_signature: str | None = Header(default=None, alias="X-Signature"),
+    session: Session = Depends(get_session),
+):
+    secret = get_webhook_secret()
+    if not secret or not request_signature:
+        raise HTTPException(status_code=401, detail="invalid_signature")
+    expected = hmac.new(secret.encode(), await request.body(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, request_signature):
+        raise HTTPException(status_code=401, detail="invalid_signature")
+
     payment = session.scalar(select(Payment).where(Payment.id == data.payment_id).with_for_update())
     if payment is None:
         raise HTTPException(status_code=404, detail="payment_not_found")
